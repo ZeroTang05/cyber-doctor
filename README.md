@@ -322,3 +322,16 @@ cyber-doctor/
    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=warma10032/cyber-doctor&type=Date" />
  </picture>
 </a>
+
+---
+
+## 需要一个能落地 AI 能力的开发者？
+
+「赛博华佗」这类多模态智能体，真正难的是把它接进业务系统、跑在别人机器上、还能收钱。
+我做 AI 应用全栈——模型接入、评测集、实时协作、支付订阅、部署运维，一个人交付完整链路。
+
+- [服务目录与作品集](https://requirement-diagnoser.tangziye2.workers.dev/go?s=gh-service-cyberdoctor&u=https%3A%2F%2Fzerotang-studio.pages.dev%2F)
+- [接单行情报告](https://requirement-diagnoser.tangziye2.workers.dev/go?s=gh-market-cyberdoctor&u=https%3A%2F%2Fzerotang-studio.pages.dev%2Fmarket.html):438 个真实在招项目的价格分布
+- [需求诊断台](https://requirement-diagnoser.tangziye2.workers.dev/go?s=gh-diagnoser-cyberdoctor&u=https%3A%2F%2Frequirement-diagnoser.tangziye2.workers.dev%2F):贴一段需求，30 秒出可行性、方案与报价区间
+
+<!-- freelancing -->

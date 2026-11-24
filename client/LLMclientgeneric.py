@@ -17,7 +17,7 @@ class LLMclientgeneric(LLMclientbase):
     # 该函数只负责单论对话交流，不支持流式输出，无历史输入
     @override
     def chat_with_ai(self, prompt: str) -> str | None:
-        response = self.client.chat.completions.create(
+        response = self.client.with_options(timeout=30.0, max_retries=0).chat.completions.create(
             model=self.model_name,
             messages=[
                 {"role": "user", "content": prompt},
@@ -33,12 +33,11 @@ class LLMclientgeneric(LLMclientbase):
     def chat_with_ai_stream(
         self, prompt: str, history: List[List[str]] | None = None
     ) -> ChatCompletion | Stream[ChatCompletionChunk]:
-        response = self.client.chat.completions.create(
+        response = self.client.with_options(timeout=30.0, max_retries=0).chat.completions.create(
             model=self.model_name,
             messages=self.construct_message(prompt, history if history else []),
             top_p=0.7,
             temperature=0.95,
-            max_tokens=1024,
             stream=True,
         )
         return response

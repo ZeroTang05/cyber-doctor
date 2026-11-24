@@ -33,6 +33,9 @@ def parse_question(question: str, image_url=None) -> userPurposeType:
     if image_url is not None:
         return purpose_map["图片描述"]
 
+    if any(keyword in question for keyword in ("生成图片", "生成一张图片", "生成图像", "画一张", "画一幅")):
+        return purpose_map["图片生成"]
+
     # 在这个函数中我们使用大模型去判断问题类型
     prompt = get_question_parser_prompt(question)
     response = Clientfactory().get_client().chat_with_ai(prompt)
@@ -52,6 +55,8 @@ def parse_question(question: str, image_url=None) -> userPurposeType:
         return purpose_map["深度研究"]
     if response == "文本生成":
         return purpose_map["文本生成"]
+    if response == "网络搜索":
+        return purpose_map["网络搜索"]
     return purpose_map["其他"]
 
 

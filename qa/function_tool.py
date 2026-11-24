@@ -7,28 +7,8 @@ import json
 from client.clientfactory import Clientfactory
 from qa.purpose_type import userPurposeType
 from pathlib import Path
-from ppt_docx.ppt_generation import generate as generate_ppt
-from ppt_docx.ppt_content import generate_ppt_content
-from ppt_docx.docx_generation import generate_docx_content as generate_docx
-from ppt_docx.docx_content import generate_docx_content
-from rag import rag_chain
-from audio.audio_extract import (
-    extract_text,
-    extract_language,
-    extract_gender,
-    get_tts_model_name,
-)
-from audio.audio_generate import audio_generate
-from model.KG.search_service import search
-from Internet.Internet_chain import InternetSearchChain
-from Internet.youcom_search import research_news as youcom_research
-from kg.Graph import GraphDao
-from config.config import Config
-from qa.purpose_type import userPurposeType
 from env import get_env_value
 
-
-_dao = GraphDao()
 
 def is_file_path(path):
     return Path(path).exists()
@@ -37,6 +17,10 @@ def relation_tool(entities: List[Dict] | None) -> str | None:
     if not entities or len(entities) == 0:
         return None
 
+    from config.config import Config
+    from kg.Graph import GraphDao
+
+    dao = GraphDao()
     relationships = set()  # 使用集合来避免重复关系
     relationship_match = []
 
@@ -48,7 +32,7 @@ def relation_tool(entities: List[Dict] | None) -> str | None:
             relationships.add(f"{entity_name} {k}: {v}")
 
         # 查询每个实体与其他实体的关系a-r-b
-        relationship_match.append(_dao.query_relationship_by_name(entity_name))
+        relationship_match.append(dao.query_relationship_by_name(entity_name))
         
     # 抽取并记录每个实体与其他实体的关系
     for i in range(len(relationship_match)):
@@ -62,7 +46,9 @@ def relation_tool(entities: List[Dict] | None) -> str | None:
             rel = type(record["r"]).__name__  # 获取关系名称，比如 CAUSES
 
             # 构建关系字符串并添加到集合，确保不会重复添加
-            relationships.add(f"{start_name} {rel} {end_name}")
+            relationships.add(
+                f"{start_name} {rel} {end_name}；说明：{record['r'].get('说明', '')}；来源：{record['r'].get('来源', '')}"
+            )
 
     # 返回关系集合的内容
     if relationships:
@@ -72,6 +58,8 @@ def relation_tool(entities: List[Dict] | None) -> str | None:
 
 
 def check_entity(question: str) -> List[Dict]:
+    from model.KG.search_service import search
+
     code, result = search(question)
     if code == 0:
         return result
@@ -85,13 +73,10 @@ def KG_tool(
     history: List[List | None] = None,
     image_url=None,
 ):
-    kg_info = None
-    try:
-        # 此处在使用知识图谱之前，需先检查问题的实体
-        entities = check_entity(question)
-        kg_info = relation_tool(entities)
-    except:
-        pass
+    entities = check_entity(question)
+    kg_info = relation_tool(entities)
+    if kg_info is None:
+        raise ValueError("知识图谱未检索到关联关系，未调用普通模型代替图谱问答")
 
     if kg_info is not None:
         print(f"KG_tool: \n {kg_info}")
@@ -119,6 +104,8 @@ def RAG_tool(
     history: List[List | None] = None,
     image_url=None,
 ):
+    from rag import rag_chain
+
     # 先利用question去检索得到docs
     response = rag_chain.invoke(question, history)
     return (response, question_type)
@@ -140,10 +127,14 @@ def process_image_describe_tool(question_type, question, history, image_url=None
         question = "描述这个图片，说明这个图片的主要内容"
     image_bases = []
     for img_url in image_url:
-        if is_file_path(img_url):
+        if not img_url.startswith(("https://", "http://")) and is_file_path(img_url):
+            from PIL import Image
+
+            with Image.open(img_url) as image:
+                mime_type = Image.MIME[image.format]
             with open(img_url, "rb") as img_file:
                 image_base = base64.b64encode(img_file.read()).decode("utf-8")
-                image_bases.append(image_base)
+                image_bases.append(f"data:{mime_type};base64,{image_base}")
         else:
             image_bases.append(img_url)
 
@@ -171,13 +162,15 @@ def process_image_describe_tool(question_type, question, history, image_url=None
 def process_ppt_tool(
     question_type, question: str, history: List[List[str] | None] = None, image_url=None
 ) -> Tuple[Tuple[str, str], userPurposeType]:
-    raw_text: str = generate_ppt_content(question, history)
+    from ppt_docx import ppt_content, ppt_generation
+
+    raw_text: str = ppt_content.generate_ppt_content(question, history)
     try:
-        ppt_content = json.loads(raw_text)
+        content = json.loads(raw_text)
     except:
         return None, userPurposeType.PPT
-    ppt_file: str = generate_ppt(
-        ppt_content
+    ppt_file: str = ppt_generation.generate(
+        content
     )  # 这个语句由于模型能力有限，可能不会按照格式输出，会导致冲突，要用str正则语句修改，删除一些异常符号，否则会出bug
     return (ppt_file, "ppt"), userPurposeType.PPT
 
@@ -185,13 +178,15 @@ def process_ppt_tool(
 def process_docx_tool(
     question_type, question: str, history: List[List[str] | None] = None, image_url=None
 ) -> Tuple[Tuple[str, str], userPurposeType]:
+    from ppt_docx import docx_content, docx_generation
+
     # 先生成word的文案
-    raw_text: str = generate_docx_content(question, history)
+    raw_text: str = docx_content.generate_docx_content(question, history)
     try:
-        docx_content = json.loads(raw_text)
+        content = json.loads(raw_text)
     except:
         return None, userPurposeType.Docx
-    docx_file: str = generate_docx(docx_content)
+    docx_file: str = docx_generation.generate_docx_content(content)
     return (docx_file, "docx"), userPurposeType.Docx
 
 
@@ -234,6 +229,14 @@ def process_audio_tool(
     history: List[List | None] = None,
     image_url=None,
 ):
+    from audio.audio_extract import (
+        extract_text,
+        extract_language,
+        extract_gender,
+        get_tts_model_name,
+    )
+    from audio.audio_generate import audio_generate
+
     # 先让大语言模型生成需要转换成语音的文字
     text = extract_text(question, history)
     # 判断需要生成哪种语言（东北、陕西、粤...）
@@ -260,6 +263,8 @@ def process_InternetSearch_tool(
     history: List[List | None] = None,
     image_url=None,
 ):
+    from Internet.Internet_chain import InternetSearchChain
+
     response, links, success = InternetSearchChain(question, history)
     return (response, question_type, links, success)
 
@@ -271,7 +276,9 @@ def YoucomResearch_tool(
     history: List[List | None] = None,
     image_url=None,
 ):
-    result = youcom_research(question, research_effort="standard")
+    from Internet.youcom_search import research_news
+
+    result = research_news(question, research_effort="standard")
     response = Clientfactory().get_client().chat_with_ai_stream(
         f"根据以下深度研究结果回答问题：\n{result}\n\n问题：{question}",
         history,

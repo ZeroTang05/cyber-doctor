@@ -5,10 +5,9 @@ from config.config import Config
 from env import get_app_root
 
 import os
-import shutil
-import markdown  # pip install markdown
-import unstructured  # pip install unstructured
-import docx  # pip install python-docx
+
+os.environ["MODELSCOPE_CACHE"] = os.path.join(get_app_root(), ".models", "modelscope")
+os.environ["HF_HOME"] = os.path.join(get_app_root(), ".models", "huggingface")
 
 from langchain_community.embeddings import ModelScopeEmbeddings
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -45,28 +44,22 @@ class Retrievemodel(Modelbase):
         self._embedding_model_name = Config.get_instance().get_with_nested_params(
             "model", "embedding", "model-name"
         )
-        self._embedding_model_path = os.path.join(
-            self._embedding_download_path, self._embedding_model_name
+        self._embedding_download_path = os.path.join(get_app_root(), self._embedding_download_path)
+        self._embedding_model_path = snapshot_download(
+            self._embedding_model_name,
+            revision=Config.get_instance().get_with_nested_params("model", "embedding", "model-version"),
+            cache_dir=self._embedding_download_path,
         )
-        if not os.path.exists(self._embedding_model_path):
-            try:
-                # 如果为空，则从modelscope下载模型
-                model_dir = snapshot_download(
-                    self._embedding_model_name,
-                    cache_dir=self._embedding_download_path,
-                )
-                print(f"Model downloaded and saved to {model_dir}")
-            except Exception as e:
-                print(f"Failed to download model: {e}")
-                if os.path.exists(self._embedding_model_path):
-                    shutil.rmtree(self._embedding_model_path)
         # self._loader = PyPDFDirectoryLoader
         self._text_splitter = RecursiveCharacterTextSplitter
         # self._embedding = OpenAIEmbeddings()
-        self._embedding = ModelScopeEmbeddings(model_id=self._embedding_model_path)
+        self._embedding = ModelScopeEmbeddings(
+            model_id=self._embedding_model_path,
+        )
         self._data_path = Config.get_instance().get_with_nested_params(
             "Knowledge-base-path"
         )
+        self._data_path = os.path.join(get_app_root(), self._data_path)
         if not os.path.exists(self._data_path):
             os.makedirs(self._data_path)
         self._user_retrievers = {}
@@ -101,7 +94,7 @@ class Retrievemodel(Modelbase):
             glob="**/*.txt",
             loader_cls=TextLoader,
             silent_errors=True,
-            loader_kwargs={"autodetect_encoding": True},
+            loader_kwargs={"encoding": "utf-8"},
             use_multithreading=True,
         )
         txt_docs = txt_loader.load()
@@ -167,14 +160,16 @@ class Retrievemodel(Modelbase):
             chunk_size=2000, chunk_overlap=100
         )
         splits = text_splitter.split_documents(docs)
+        if not splits:
+            raise ValueError("知识库中没有成功加载的文档，无法建立 FAISS 索引")
 
         # 使用 FAISS 创建一个向量数据库，存储分割后的文档及其嵌入向量
         vectorstore = FAISS.from_documents(documents=splits, embedding=self._embedding)
         # 将向量存储转换为检索器，设置检索参数 k 为 6，即返回最相似的 6 个文档
         self._retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
-        # 设置模型状态为 BUILDING
-        self._model_status = ModelStatus.BUILDING
+        self._model_status = ModelStatus.READY
+        print(f"RAG FAISS ready: documents={len(docs)}, chunks={len(splits)}, vectors={vectorstore.index.ntotal}", flush=True)
 
     @property
     def retriever(self) -> VectorStoreRetriever:

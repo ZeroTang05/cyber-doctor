@@ -3,11 +3,12 @@ from langchain_core.documents import Document
 from model.RAG.retrieve_service import retrieve
 
 def format_docs(docs:List[Document]):
-    return "\n-------------分割线--------------\n".join(doc.page_content for doc in docs)
+    return "\n-------------分割线--------------\n".join(
+        f"文件：{doc.metadata.get('source')}\n{doc.page_content}" for doc in docs
+    )
 
 def retrieve_docs(question:str)->Tuple[List[Document],str]:
     docs = retrieve(question) # 这里的到的是文件
     _context = format_docs(docs) # 这里处理成文本
-    print(_context)
+    print(f"RAG retrieved {len(docs)} chunks:\n{_context}", flush=True)
     return (docs,_context)
-    

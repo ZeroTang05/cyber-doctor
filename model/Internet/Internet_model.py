@@ -5,13 +5,17 @@ from model.model_base import ModelStatus
 import os
 from env import get_app_root
 
+os.environ["MODELSCOPE_CACHE"] = os.path.join(get_app_root(), ".models", "modelscope")
+os.environ["HF_HOME"] = os.path.join(get_app_root(), ".models", "huggingface")
+
 from langchain_community.embeddings import ModelScopeEmbeddings
 from langchain_core.vectorstores import VectorStoreRetriever
-from langchain_community.document_loaders import DirectoryLoader, MHTMLLoader, UnstructuredHTMLLoader
+from langchain_community.document_loaders import DirectoryLoader, MHTMLLoader, BSHTMLLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores.faiss import FAISS
 
 from config.config import Config
+from modelscope.hub.snapshot_download import snapshot_download
 
 # 检索模型
 class InternetModel(Modelbase):
@@ -21,11 +25,18 @@ class InternetModel(Modelbase):
     def __init__(self,*args,**krgs):
         super().__init__(*args,**krgs)
 
-        # 此处请自行改成下载embedding模型的位置
-        self._embedding_model_path =Config.get_instance().get_with_nested_params("model", "embedding", "model-name")
+        config = Config.get_instance()
+        revision = config.get_with_nested_params("model", "embedding", "model-version")
+        # 演示仅使用已经下载的项目缓存，不发起模型下载。
+        self._embedding_model_path = snapshot_download(
+            config.get_with_nested_params("model", "embedding", "model-name"),
+            revision=revision,
+            cache_dir=os.path.join(get_app_root(), config.get_with_nested_params("model", "embedding", "model-path")),
+            local_files_only=True,
+        )
         self._text_splitter = RecursiveCharacterTextSplitter
         #self._embedding = OpenAIEmbeddings()
-        self._embedding = ModelScopeEmbeddings(model_id=self._embedding_model_path)
+        self._embedding = ModelScopeEmbeddings(model_id=self._embedding_model_path, model_revision=revision)
         self._data_path = os.path.join(get_app_root(), "data/cache/internet")
         
         #self._logger: Logger = Logger("rag_retriever")
@@ -33,7 +44,7 @@ class InternetModel(Modelbase):
     # 建立向量库
     def build(self):
         # 加载html文件
-        html_loader = DirectoryLoader(self._data_path, glob="**/*.html", loader_cls=UnstructuredHTMLLoader, silent_errors=True, use_multithreading=True)
+        html_loader = DirectoryLoader(self._data_path, glob="**/*.html", loader_cls=BSHTMLLoader, loader_kwargs={"open_encoding": "utf-8"}, silent_errors=True, use_multithreading=True)
         html_docs = html_loader.load()
         
         mhtml_loader = DirectoryLoader(self._data_path, glob="**/*.mhtml", loader_cls=MHTMLLoader, silent_errors=True, use_multithreading=True)

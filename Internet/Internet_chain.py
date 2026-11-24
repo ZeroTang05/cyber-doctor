@@ -1,16 +1,12 @@
-from Internet.Internet_prompt import extract_question
 from Internet.retrieve_Internet import retrieve_html
 from Internet.youcom_search import search_news as youcom_search
 from client.clientfactory import Clientfactory
 from env import get_app_root
 
-import re
 import os
 import requests
 import shutil
-import threading
 from bs4 import BeautifulSoup
-from urllib3.exceptions import InsecureRequestWarning
 
 _SAVE_PATH = os.path.join(get_app_root(), "data/cache/internet")
 
@@ -22,46 +18,20 @@ def InternetSearchChain(question, history):
     if not os.path.exists(_SAVE_PATH):
         os.makedirs(_SAVE_PATH)
 
-    whole_question = extract_question(question, history)
-    question_list = re.split(r"[;；]", whole_question)
-
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-
-    # Try You.com Search first, fall back to Bing/Baidu scraping
-    youcom_result = try_youcom_search(whole_question)
-    if youcom_result is not None:
+    # 一次发送只执行一次 You.com 搜索，不追加关键词提取或其他搜索请求。
+    youcom_result = try_youcom_search(question)
+    if youcom_result is not None and youcom_result.get("has_files"):
         links = youcom_result.get("links", {})
-        if youcom_result.get("has_files"):
-            docs, _context = retrieve_html(question)
-            prompt = f"根据你现有的知识，辅助以搜索到的文件资料：\n{_context}\n 回答问题：\n{question}\n 尽可能多的覆盖到文件资料"
-        else:
-            prompt = youcom_result.get("response", question)
+        docs, _context = retrieve_html(question)
+        if not docs or not _context.strip():
+            print("搜索结果未提取出可用资料，本次不调用回答模型。", flush=True)
+            return iter(()), {}, False
+        prompt = f"根据搜索资料回答问题，并保留来源，不编造检索结果：\n{_context}\n问题：\n{question}"
         response = Clientfactory().get_client().chat_with_ai_stream(prompt)
         return response, links, youcom_result.get("has_files", False)
 
-    # Fall back to Bing/Baidu scraping
-    links = {}
-    threads = []
-    for q in question_list:
-        thread = threading.Thread(target=search_bing, args=(q, links, 3))
-        threads.append(thread)
-        thread.start()
-        thread = threading.Thread(target=search_baidu, args=(q, links, 3))
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join()
-
-    if has_html_files(_SAVE_PATH):
-        docs, _context = retrieve_html(question)
-        prompt = f"根据你现有的知识，辅助以搜索到的文件资料：\n{_context}\n 回答问题：\n{question}\n 尽可能多的覆盖到文件资料"
-    else:
-        prompt = question
-
-    response = Clientfactory().get_client().chat_with_ai_stream(prompt)
-
-    return response, links, has_html_files(_SAVE_PATH)
+    print("You.com 未获得可用来源，本次停止，不追加搜索或模型调用。", flush=True)
+    return iter(()), {}, False
 
 
 def try_youcom_search(question: str) -> dict | None:
@@ -118,7 +88,7 @@ def search_bing(query, links, num_results=3):
     for search_url in search_urls:
         flag = 0
         # 禁用 SSL 验证的警告
-        response = requests.get(search_url, headers=headers, verify=False)
+        response = requests.get(search_url, headers=headers, verify=False, timeout=15)
 
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
@@ -166,7 +136,7 @@ def search_baidu(query, links, num_results=3):
 
     flag = 0
     # 禁用 SSL 验证的警告
-    response = requests.get(search_url, headers=headers, verify=False)
+    response = requests.get(search_url, headers=headers, verify=False, timeout=15)
 
     if response.status_code == 200:
         soup = BeautifulSoup(response.text, "html.parser")

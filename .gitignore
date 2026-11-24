@@ -1,5 +1,9 @@
 __pycache__/
 .venv/
+.python/
+.python-bin/
+.uv-cache/
+.models/
 .pytest_cache/
 .zcode/
 .files/

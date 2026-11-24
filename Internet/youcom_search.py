@@ -80,6 +80,8 @@ def search_news(query: str, count: int = 10) -> str:
         title = item.get("title", f"Result {i}")
         url = item.get("url", "")
         snippets = item.get("snippets", [])
+        if not snippets:
+            snippets = item.get("contents", {}).get("highlights", [])
         snippet = snippets[0] if isinstance(snippets, list) and snippets else item.get("description", "")
         lines.append(f"[{i}] {title}\n   URL: {url}\n   Summary: {snippet}")
 

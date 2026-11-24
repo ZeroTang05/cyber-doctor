@@ -1,6 +1,7 @@
 '''实例化知识图谱对象'''
 from config.config import Config
-from py2neo import Graph, NodeMatcher, RelationshipMatcher, ConnectionUnavailable
+from env import get_env_value
+from py2neo import Graph, NodeMatcher, RelationshipMatcher
 
 class GraphDao(object):
 
@@ -8,7 +9,9 @@ class GraphDao(object):
         # 读取yaml配置
         self.__url = Config.get_instance().get_with_nested_params("database", "neo4j", "url")
         self.__username = Config.get_instance().get_with_nested_params("database", "neo4j", "username")
-        self.__password = Config.get_instance().get_with_nested_params("database", "neo4j", "password")
+        self.__password = get_env_value("NEO4J_PASSWORD")
+        if not self.__password:
+            raise ValueError("请在 .env 中配置 NEO4J_PASSWORD")
         self.__connect_graph()
 
         # 创建节点匹配器
@@ -27,10 +30,10 @@ class GraphDao(object):
         return wrapper
 
     def __connect_graph(self):
-        try:
-            self.__graph = Graph(self.__url, auth=(self.__username, self.__password))
-        except ConnectionUnavailable as e:
-            self.__graph = None
+        self.__graph = Graph(
+            self.__url, auth=(self.__username, self.__password),
+            name=Config.get_instance().get_with_nested_params("database", "neo4j", "database"),
+        )
     
     @ensure_connection
     def query_relationship_by_name(self, entity_name: str):

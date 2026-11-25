@@ -87,7 +87,6 @@ body:has(#cd-app) {
 
 #cd-brand,
 #cd-mode-label,
-#cd-shortcuts,
 #cd-source,
 #cd-title {
     min-width: 0;
@@ -106,8 +105,7 @@ body:has(#cd-app) {
 
 #cd-brand h1,
 #cd-title h2,
-#cd-mode-label h2,
-#cd-shortcuts h2 {
+#cd-mode-label h2 {
     margin: 0;
     color: var(--cd-ink);
     font-family: var(--cd-font);
@@ -152,8 +150,75 @@ body:has(#cd-app) {
     margin-top: 22px;
 }
 
-#cd-mode-label h2,
-#cd-shortcuts h2 {
+#cd-history {
+    margin-top: 22px;
+    min-width: 0;
+    background: transparent;
+}
+
+#cd-history-select {
+    display: none !important;
+}
+
+#cd-history h2 {
+    margin: 0 9px 5px;
+    color: var(--cd-muted);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.cd-history-list {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 3px;
+}
+
+.cd-history-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+    min-height: 45px;
+    padding: 6px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--cd-ink);
+    font: 500 13px / 1.4 var(--cd-font);
+    text-align: left;
+    cursor: pointer;
+}
+
+.cd-history-item:hover,
+.cd-history-item.active {
+    border-color: var(--cd-border);
+    background: var(--cd-content);
+}
+
+.cd-history-item-title {
+    overflow: hidden;
+    color: inherit;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cd-history-item-time {
+    margin-top: 2px;
+    color: var(--cd-muted);
+    font-size: 11px;
+    font-weight: 400;
+}
+
+.cd-history-empty {
+    margin: 0 9px;
+    color: var(--cd-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+#cd-mode-label h2 {
     margin: 0 9px 5px;
     color: var(--cd-muted);
     font-size: 12px;
@@ -189,17 +254,6 @@ body:has(#cd-app) {
     background: var(--cd-content);
     color: var(--cd-accent);
     font-weight: 650;
-}
-
-#cd-shortcuts {
-    margin-top: 22px;
-}
-
-#cd-shortcuts .cd-prompt {
-    display: flex;
-    width: 100%;
-    min-height: 34px;
-    font-size: 13px;
 }
 
 [data-icon="pulse"] {
@@ -638,62 +692,6 @@ body:has(#cd-app) {
     color: var(--cd-muted);
 }
 
-#cd-examples {
-    --block-border-width: 0px;
-    --block-padding: 0px;
-    --block-shadow: none;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-    margin-top: 10px;
-}
-
-#cd-examples > button {
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    min-height: 33px;
-    padding: 0 8px;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--cd-muted);
-    font: 500 13px / 1.4 var(--cd-font);
-}
-
-#cd-examples > button .icon {
-    display: none;
-}
-
-#cd-examples > button::after {
-    content: "";
-    width: 5px;
-    height: 5px;
-    border: solid currentColor;
-    border-width: 0 1px 1px 0;
-    transform: translateY(-1px) rotate(45deg);
-}
-
-#cd-examples > button.open::after {
-    transform: translateY(1px) rotate(225deg);
-}
-
-#cd-examples > button:hover {
-    background: var(--cd-sidebar);
-    color: var(--cd-ink);
-}
-
-#cd-example-list {
-    max-height: min(25dvh, 180px);
-    overflow: auto;
-    background: var(--cd-content);
-}
-
-#cd-example-list button {
-    max-width: 100%;
-    white-space: normal;
-    overflow-wrap: anywhere;
-}
-
 #cd-app :is(button, a):focus-visible {
     outline: 2px solid var(--cd-accent);
     outline-offset: 2px;
@@ -789,6 +787,5 @@ body:has(#cd-app) {
     #cd-app .cd-prompt,
     #cd-clear,
     #cd-source a,
-    #cd-audio-send,
-    #cd-examples > button { min-height: 44px; }
+    #cd-audio-send { min-height: 44px; }
 }

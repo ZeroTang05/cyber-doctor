@@ -131,6 +131,7 @@ def process_images_tool(question_type, question, history, image_url=None):
 
 
 def process_image_describe_tool(question_type, question, history, image_url=None):
+    """将图片和问题交给配置的图片理解服务。"""
     if question == "请你将下面的句子修饰后输出，不要包含额外的文字，句子:'请问您有什么想了解的，我将尽力为您服务'":
         question = "描述这个图片，说明这个图片的主要内容"
     image_bases = []
@@ -153,16 +154,16 @@ def process_image_describe_tool(question_type, question, history, image_url=None
     # 添加问题的文本内容
     message_content.append({"type": "text", "text": question})
 
+    messages = [{"role": "user", "content": message_content}]
+    if (get_env_value("IMAGE_DESCRIBE_PROVIDER") or "zhipu").strip().lower() == "minimax":
+        from client.minimaxAPI.client import MiniMaxAPI
+
+        return (MiniMaxAPI().stream_image_answer(messages), question_type)
+
     client = Clientfactory.get_special_client(client_type=question_type)
-    # 发送请求
     response = client.chat.completions.create(
         model=get_env_value("IMAGE_DESCRIBE_MODEL"),
-        messages=[
-            {
-                "role": "user",
-                "content": message_content,
-            }
-        ],
+        messages=messages,
     )
     return (response.choices[0].message.content, question_type)
 

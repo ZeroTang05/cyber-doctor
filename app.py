@@ -1,21 +1,22 @@
 import base64
+import json
 from pathlib import Path
 from qa.answer import get_answer
 from qa.question_parser import parse_question
 from qa.purpose_type import userPurposeType
 from audio.audio_generate import audio_generate
 
-import base64
 import mimetypes
 import gradio as gr
 from icecream import ic
 import os
 from time import monotonic
-from openai import APIError
+from openai import APIError, Stream
 from httpx import TransportError
 
 
 AVATAR = ("resource/user.png", "resource/bot.jpg")
+THINKING_TITLE = "思考过程"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # pip install whisper
@@ -102,10 +103,8 @@ def image_to_base64(image_path):
 
 
 # 核心函数
-def grodio_view(chatbot, chat_input):
+def grodio_view(chatbot, chat_input, thoughts):
     user_message = chat_input["text"] or ""
-    if not user_message.strip() and not chat_input["files"]:
-        return
     bot_response = "正在处理…"
     chatbot.append([user_message, bot_response])
     yield chatbot, {"text": "", "files": []}
@@ -139,17 +138,17 @@ def grodio_view(chatbot, chat_input):
     # 图片文件解析
     if images != []:
         image_url = images
-        image_base64 = [image_to_base64(image) for image in image_url]
-
-        for i, image in enumerate(image_base64):
+        for image in image_url:
+            mime_type = mimetypes.guess_type(image)[0]
+            image_base64 = image_to_base64(image)
             chatbot[-1][
                 0
             ] += f"""
                 <div>
-                    <img src="data:image/png;base64,{image}" alt="Generated Image" style="max-width: 100%; height: auto; cursor: pointer;" />
+                    <img src="data:{mime_type};base64,{image_base64}" alt="上传的图片" style="max-width: 100%; height: auto; cursor: pointer;" />
                 </div>
                 """
-            yield chatbot, gr.skip()
+        yield chatbot, gr.skip()
     else:
         image_url = None
 
@@ -189,53 +188,73 @@ def grodio_view(chatbot, chat_input):
 
     if user_message == "":
         user_message = "请你将下面的句子修饰后输出，不要包含额外的文字，句子:'请问您有什么想了解的，我将尽力为您服务'"
+    is_image_answer = question_type == userPurposeType.ImageDescribe
+    request_started = monotonic()
+    if is_image_answer:
+        print(f"Image analysis: started, images={len(images)}", flush=True)
     try:
         answer = get_answer(user_message, chatbot[:-1], question_type, image_url)
     except (APIError, ValueError) as error:
+        if is_image_answer:
+            print(
+                f"Image analysis: error={type(error).__name__}, "
+                f"status={getattr(error, 'status_code', None)}, "
+                f"duration={monotonic() - request_started:.2f}s",
+                flush=True,
+            )
         chatbot[-1][1] = model_error_message(error)
         yield chatbot, gr.skip()
         return
     bot_response = ""
 
-    # 处理文本生成/其他/文档检索/知识图谱检索
+    # 文本和 MiniMax 图片理解共用流式更新，分别累积思考和正文。
     if (
         answer[1] == userPurposeType.text
         or answer[1] == userPurposeType.RAG
         or answer[1] == userPurposeType.KnowledgeGraph
         or answer[1] == userPurposeType.DeepResearch
+        or (is_image_answer and isinstance(answer[0], Stream))
     ):
         # 合并高频 token，首段立即显示，结束时补齐最后一段。
+        log_label = "Image stream" if is_image_answer else "Text stream"
         last_refresh = 0.0
-        emitted_response = ""
-        stream_started = monotonic()
+        stream_started = request_started if is_image_answer else monotonic()
         previous_chunk = stream_started
         max_chunk_gap = 0.0
         chunk_count = 0
         refresh_count = 0
         finish_reason = None
         stream_error = None
+        completion_tokens = None
+        turn_index = len(chatbot) - 1
         try:
             for chunk in answer[0]:
+                if is_image_answer and chunk.usage is not None:
+                    completion_tokens = chunk.usage.completion_tokens
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
                 if choice.finish_reason is not None:
                     finish_reason = choice.finish_reason
                 content = choice.delta.content
-                if not content:
+                reasoning = getattr(choice.delta, "reasoning_content", None)
+                if not reasoning and not content:
                     continue
+                if reasoning:
+                    thoughts[turn_index] = thoughts.get(turn_index, "") + reasoning
+                if content:
+                    chunk_count += 1
+                    bot_response += content
                 now = monotonic()
                 gap = now - previous_chunk
                 max_chunk_gap = max(max_chunk_gap, gap)
                 if gap >= 2:
-                    print(f"Text stream: upstream_gap={gap:.2f}s, content_chunks={chunk_count}", flush=True)
+                    print(f"{log_label}: upstream_gap={gap:.2f}s, content_chunks={chunk_count}", flush=True)
                 previous_chunk = now
-                chunk_count += 1
-                bot_response += content
                 if last_refresh and now - last_refresh < 0.1:
                     continue
-                chatbot[-1][1] = bot_response
-                emitted_response = bot_response
+                if bot_response:
+                    chatbot[-1][1] = bot_response
                 last_refresh = now
                 refresh_count += 1
                 yield chatbot, gr.skip()
@@ -243,22 +262,36 @@ def grodio_view(chatbot, chat_input):
             stream_error = type(error).__name__
         finally:
             answer[0].close()
+        content_chars = len(bot_response.strip())
         if stream_error:
-            bot_response += f"\n\n> 模型连接中断或等待超时（{stream_error}），以上为已收到的内容。"
+            error_message = f"模型连接中断或等待超时（{stream_error}）。"
+            if content_chars:
+                bot_response += f"\n\n> {error_message} 以上为已收到的内容。"
+            else:
+                bot_response = error_message
         elif finish_reason == "length":
             bot_response += "\n\n> 模型达到输出长度上限，回答尚未完成。"
         elif finish_reason != "stop":
             bot_response += f"\n\n> 模型未正常完成回答（结束原因：{finish_reason or '未收到结束标记'}）。"
+        elif not content_chars:
+            bot_response = "模型没有返回正文，请重试。"
         # 无论最后一个 chunk 是否触发节流，都提交最终累积文本。
         chatbot[-1][1] = bot_response
         refresh_count += 1
-        yield chatbot, gr.skip()
+        usage_log = ""
+        if is_image_answer:
+            usage_log = (
+                f", content_chars={content_chars}, reasoning_chars={len(thoughts.get(turn_index, ''))}, "
+                f"completion_tokens={completion_tokens}"
+            )
         print(
-            f"Text stream: chunks={chunk_count}, refreshes={refresh_count}, "
+            f"{log_label}: chunks={chunk_count}, refreshes={refresh_count}, "
             f"duration={monotonic() - stream_started:.2f}s, max_chunk_gap={max_chunk_gap:.2f}s, "
-            f"finish_reason={finish_reason}, error={stream_error}, chars={len(bot_response)}",
+            f"finish_reason={finish_reason}, error={stream_error}, chars={len(bot_response)}{usage_log}",
             flush=True,
         )
+        yield chatbot, gr.skip()
+        return
 
     # 处理图片生成
     if answer[1] == userPurposeType.ImageGeneration:
@@ -272,10 +305,14 @@ def grodio_view(chatbot, chat_input):
 
     # 处理图片描述
     if answer[1] == userPurposeType.ImageDescribe:
-        for i in range(0, len(answer[0]), 1):
-            bot_response += answer[0][i : i + 1]  # 累加当前chunk到combined_message
-            chatbot[-1][1] = bot_response  # 更新chatbot对话中的最后一条消息
-            yield chatbot, gr.skip()  # 实时输出当前累积的对话内容
+        content = (answer[0] or "").strip()
+        print(
+            f"Image analysis: content_chars={len(content)}, "
+            f"duration={monotonic() - request_started:.2f}s",
+            flush=True,
+        )
+        chatbot[-1][1] = content or "模型没有返回正文，请重试。"
+        yield chatbot, gr.skip()
 
     # 处理视频
     if answer[1] == userPurposeType.Video:
@@ -493,8 +530,9 @@ def model_error_message(error):
 
 
 def chat_turns(messages):
-    """将 Gradio 消息还原为模型调用使用的问答对。"""
+    """从 Gradio 消息恢复问答对，并按轮次保留展示用的思考过程。"""
     turns = []
+    thoughts = {}
     for message in messages:
         item = message["content"][0]
         content = item["text"] if item["type"] == "text" else (
@@ -503,15 +541,26 @@ def chat_turns(messages):
         if message["role"] == "user":
             turns.append([content, None])
         elif message["role"] == "assistant":
-            turns[-1][1] = content
-    return turns
+            metadata = message.get("metadata") or {}
+            if metadata.get("title") == THINKING_TITLE:
+                thoughts[len(turns) - 1] = content
+            else:
+                turns[-1][1] = content
+    return turns, thoughts
 
 
-def chat_messages(turns):
-    """将问答对转换为 Gradio 6 的文本或文件消息。"""
+def chat_messages(turns, thoughts):
+    """将问答对和折叠的思考过程转换为 Gradio 消息。"""
     messages = []
-    for turn in turns:
+    for index, turn in enumerate(turns):
         for role, content in zip(("user", "assistant"), turn):
+            if role == "assistant" and index in thoughts:
+                messages.append({
+                    "role": "assistant",
+                    "content": thoughts[index],
+                    # Gradio 用 done 让思考区默认折叠。
+                    "metadata": {"title": THINKING_TITLE, "status": "done"},
+                })
             if content is None:
                 continue
             if isinstance(content, tuple):
@@ -523,14 +572,30 @@ def chat_messages(turns):
 
 def submit_text_chat(messages, chat_input):
     """提交文字或附件，并逐次更新聊天记录。"""
-    for turns, composer in grodio_view(chat_turns(messages), chat_input):
-        yield chat_messages(turns), composer
+    if chat_input is None or not ((chat_input["text"] or "").strip() or chat_input["files"]):
+        # 空提交也返回输入框值，避免 Gradio 将组件写成 null。
+        yield gr.skip(), {"text": "", "files": []}
+        return
+    turns, thoughts = chat_turns(messages)
+    for turns, composer in grodio_view(turns, chat_input, thoughts):
+        yield chat_messages(turns, thoughts), composer
 
 
 def submit_voice_chat(messages, audio_input):
     """提交录音，并逐次更新聊天记录。"""
-    for turns in gradio_audio_view(chat_turns(messages), audio_input):
-        yield chat_messages(turns)
+    turns, thoughts = chat_turns(messages)
+    for turns in gradio_audio_view(turns, audio_input):
+        yield chat_messages(turns, thoughts)
+
+
+def restore_history(payload):
+    """将浏览器缓存的聊天消息恢复到 Gradio Chatbot。"""
+    if not payload:
+        return [], {"text": "", "files": []}
+    messages = json.loads(payload)
+    if not isinstance(messages, list):
+        raise ValueError("浏览器缓存的会话格式无效")
+    return messages, {"text": "", "files": []}
 
 
 # 切换到语音模式的函数
@@ -553,26 +618,6 @@ def toggle_text_mode():
         gr.update(variant="primary"),
         gr.update(visible=False),
     )
-
-
-examples = [
-    {"text": "您好", "files": []},
-    {"text": "糖尿病的常见症状有哪些？", "files": []},
-    {"text": "用语音重新回答我一次", "files": []},
-    {"text": "帮我搜索一下养生知识", "files": []},
-    {"text": "请深度研究糖尿病治疗的最新进展", "files": []},
-        {"text": "帮我生成一张老人练太极图片", "files": []},
-    {
-        "text": "帮我生成一份用于科普糖尿病发病原因，症状，治疗药物，预防措施的PPT",
-        "files": [],
-    },
-    {"text": "请根据我给的参考资料，给我一个合理的饮食建议", "files": []},
-    {"text": "请根据我给的参考资料，生成一个用于科普合理膳食的word", "files": []},
-    {"text": "我最近想打太极养生，帮我生成一段老人打太极的视频吧", "files": []},
-    {"text": "根据我的病历，给我一个合理的治疗方案", "files": []},
-    {"text": "根据知识库介绍一下常见疾病", "files": []},
-    {"text": "根据知识图谱告诉我糖尿病人适合吃的食物有哪些？", "files": []},
-]
 
 
 ASSISTANT_MARK = (
@@ -612,8 +657,187 @@ with gr.Blocks(
         const composer = document.getElementById("cd-composer");
         const sidebar = document.getElementById("cd-sidebar");
         const sidebarToggle = document.getElementById("cd-sidebar-toggle");
+        const historyPanel = document.getElementById("cd-history");
+        const historyList = historyPanel?.querySelector(".cd-history-list");
+        const historyStorageKey = "cyber-doctor:history:v1";
         const compact = matchMedia("(max-width: 640px)");
         let pendingPrompt;
+
+        const newHistoryId = () => {
+            if (crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            return Date.now() + "-" + Math.random().toString(16).slice(2);
+        };
+
+        const readHistoryStore = () => {
+            const raw = localStorage.getItem(historyStorageKey);
+            if (!raw) {
+                return {version: 1, currentId: null, items: []};
+            }
+            try {
+                const store = JSON.parse(raw);
+                if (!store || !Array.isArray(store.items)) {
+                    throw new Error("Invalid history store");
+                }
+                return store;
+            } catch (error) {
+                console.warn("无法读取浏览器中的历史会话缓存", error);
+                localStorage.removeItem(historyStorageKey);
+                return {version: 1, currentId: null, items: []};
+            }
+        };
+
+        const writeHistoryStore = (store) => {
+            localStorage.setItem(historyStorageKey, JSON.stringify(store));
+        };
+
+        const textFromContent = (content) => {
+            if (typeof content === "string") {
+                return content.replace(/<[^>]*>/g, " ").replace(/\\s+/g, " ").trim();
+            }
+            if (Array.isArray(content)) {
+                return content.map((item) => textFromContent(item)).join(" ").trim();
+            }
+            if (content && typeof content === "object") {
+                return textFromContent(
+                    content.text
+                    || content.alt_text
+                    || content.file?.orig_name
+                    || content.file?.path
+                    || "",
+                );
+            }
+            return "";
+        };
+
+        const sanitizeMessages = (messages) => {
+            const copied = JSON.parse(JSON.stringify(messages || []));
+            const imageTag = /<img\\b[^>]*src=["']data:image\\/[^"']+["'][^>]*>/gi;
+            for (const message of copied) {
+                if (typeof message.content === "string") {
+                    message.content = message.content.replace(imageTag, "【图片附件】");
+                } else if (Array.isArray(message.content)) {
+                    message.content = message.content.map((part) => {
+                        if (typeof part === "string") {
+                            return part.replace(imageTag, "【图片附件】");
+                        }
+                        if (part && typeof part.text === "string") {
+                            return {...part, text: part.text.replace(imageTag, "【图片附件】")};
+                        }
+                        return part;
+                    });
+                }
+            }
+            return copied;
+        };
+
+        const historyTitle = (messages) => {
+            const firstUserMessage = (messages || []).find((message) => message.role === "user");
+            const title = firstUserMessage ? textFromContent(firstUserMessage.content) : "";
+            return (title || "新对话").slice(0, 36);
+        };
+
+        const renderHistoryList = () => {
+            if (!historyList) {
+                return;
+            }
+            const store = readHistoryStore();
+            const items = [...store.items].sort((left, right) => right.updatedAt - left.updatedAt);
+            historyList.replaceChildren();
+            if (!items.length) {
+                const empty = document.createElement("p");
+                empty.className = "cd-history-empty";
+                empty.textContent = "暂无历史会话";
+                historyList.append(empty);
+                return;
+            }
+            for (const item of items) {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "cd-history-item";
+                button.dataset.historyId = item.id;
+                button.classList.toggle("active", item.id === window.__cdCurrentHistoryId);
+                button.setAttribute("aria-label", "打开历史会话：" + item.title);
+
+                const title = document.createElement("span");
+                title.className = "cd-history-item-title";
+                title.textContent = item.title;
+                const time = document.createElement("time");
+                time.className = "cd-history-item-time";
+                time.textContent = new Intl.DateTimeFormat("zh-CN", {
+                    month: "numeric",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                }).format(new Date(item.updatedAt));
+                button.append(title, time);
+                historyList.append(button);
+            }
+        };
+
+        const selectHistory = (id) => {
+            const store = readHistoryStore();
+            const item = store.items.find((entry) => entry.id === id);
+            if (!item) {
+                return;
+            }
+            window.__cdCurrentHistoryId = id;
+            window.__cdHistoryPayload = JSON.stringify(item.messages || []);
+            store.currentId = id;
+            writeHistoryStore(store);
+            renderHistoryList();
+            document.querySelector("#cd-history-select button, button#cd-history-select")?.click();
+            setSidebar(false, false);
+        };
+
+        const persistHistory = (messages) => {
+            const safeMessages = sanitizeMessages(messages);
+            window.__cdLastChatMessages = safeMessages;
+            if (!safeMessages.length) {
+                renderHistoryList();
+                return;
+            }
+            const store = readHistoryStore();
+            const currentId = window.__cdCurrentHistoryId || newHistoryId();
+            window.__cdCurrentHistoryId = currentId;
+            const item = {
+                id: currentId,
+                title: historyTitle(safeMessages),
+                updatedAt: Date.now(),
+                messages: safeMessages,
+            };
+            store.currentId = currentId;
+            store.items = [item, ...store.items.filter((entry) => entry.id !== currentId)].slice(0, 30);
+            try {
+                writeHistoryStore(store);
+            } catch (error) {
+                console.error("无法保存浏览器中的历史会话缓存", error);
+            }
+            renderHistoryList();
+        };
+
+        window.__cdQueueHistorySave = (messages) => {
+            window.__cdLastChatMessages = sanitizeMessages(messages);
+            clearTimeout(window.__cdHistorySaveTimer);
+            window.__cdHistorySaveTimer = setTimeout(
+                () => persistHistory(window.__cdLastChatMessages),
+                180,
+            );
+        };
+
+        const initialStore = readHistoryStore();
+        const initialItem = initialStore.items.find((item) => item.id === initialStore.currentId)
+            || [...initialStore.items].sort((left, right) => right.updatedAt - left.updatedAt)[0];
+        window.__cdCurrentHistoryId = initialItem?.id || newHistoryId();
+        window.__cdHistoryPayload = JSON.stringify(initialItem?.messages || []);
+        renderHistoryList();
+        window.addEventListener("beforeunload", () => {
+            clearTimeout(window.__cdHistorySaveTimer);
+            if (window.__cdLastChatMessages?.length) {
+                persistHistory(window.__cdLastChatMessages);
+            }
+        });
 
         const labelControls = () => {
             for (const button of modes.querySelectorAll(".cd-mode")) {
@@ -647,6 +871,11 @@ with gr.Blocks(
         compact.addEventListener("change", () => setSidebar(false, false));
         sidebarToggle.addEventListener("click", () => setSidebar(!app.hasAttribute("data-sidebar-open")));
         app.addEventListener("click", (event) => {
+            const historyButton = event.target.closest("[data-history-id]");
+            if (historyButton) {
+                selectHistory(historyButton.dataset.historyId);
+                return;
+            }
             const prompt = event.target.closest("button[data-prompt]");
             if (prompt) {
                 pendingPrompt = prompt.dataset.prompt;
@@ -656,6 +885,19 @@ with gr.Blocks(
                 }
                 labelControls();
                 return;
+            }
+            if (event.target.closest("#cd-new")) {
+                const store = readHistoryStore();
+                window.__cdCurrentHistoryId = newHistoryId();
+                store.currentId = window.__cdCurrentHistoryId;
+                writeHistoryStore(store);
+                renderHistoryList();
+            } else if (event.target.closest("#cd-clear")) {
+                const store = readHistoryStore();
+                store.items = store.items.filter((item) => item.id !== window.__cdCurrentHistoryId);
+                store.currentId = window.__cdCurrentHistoryId;
+                writeHistoryStore(store);
+                renderHistoryList();
             }
             if (app.hasAttribute("data-sidebar-open") && !sidebarToggle.contains(event.target)) {
                 if (event.target.closest("#cd-new, .cd-mode") || !sidebar.contains(event.target)) {
@@ -684,6 +926,10 @@ with gr.Blocks(
                 elem_id="cd-brand",
             )
             new_chat = gr.ClearButton(value="新对话", elem_id="cd-new", min_width=0)
+            gr.HTML(
+                '<section><h2>历史会话</h2><div class="cd-history-list" role="list"></div></section>',
+                elem_id="cd-history",
+            )
             with gr.Column(elem_id="cd-modes", min_width=0, scale=0):
                 gr.HTML('<h2>对话模式</h2>', elem_id="cd-mode-label")
                 toggle_text_button = gr.Button(
@@ -694,21 +940,12 @@ with gr.Blocks(
                     "语音对话", elem_id="cd-mode-voice", elem_classes=["cd-mode"], min_width=0,
                 )
             gr.HTML(
-                '<section><h2>快捷提问</h2>'
-                + "".join(
-                    f'<button type="button" class="cd-prompt" data-icon="{icon}" data-prompt="{question}">'
-                    f'{category}</button>'
-                    for category, question, icon in QUICK_PROMPTS[:4]
-                )
-                + '</section>',
-                elem_id="cd-shortcuts",
-            )
-            sidebar_examples = gr.Accordion("更多示例", open=False, elem_id="cd-examples")
-            gr.HTML(
                 '<a href="https://github.com/ZeroTang05/cyber-doctor" target="_blank" '
                 'rel="noopener noreferrer">项目源码<span aria-hidden="true">↗</span></a>',
                 elem_id="cd-source",
             )
+            history_loader = gr.Textbox(value="", visible=False, elem_id="cd-history-loader")
+            history_select = gr.Button(value="", elem_id="cd-history-select")
 
         with gr.Column(elem_id="cd-workspace", min_width=0):
             with gr.Row(elem_id="cd-toolbar"):
@@ -770,18 +1007,32 @@ with gr.Blocks(
                 submit_audio_button = gr.Button(
                     "发送", visible=False, interactive=False, variant="primary", elem_id="cd-audio-send",
                 )
-    with sidebar_examples:
-        gr.Examples(
-            examples=examples, inputs=chat_input, label="", elem_id="cd-example-list",
-            examples_per_page=15,
-        )
-
     new_chat.add([chatbot, chat_input, audio_input])
     clear.add([chatbot, chat_input, audio_input])
 
     chat_input.submit(
         fn=submit_text_chat, inputs=[chatbot, chat_input], outputs=[chatbot, chat_input],
         api_name="grodio_view",
+    )
+    chatbot.change(
+        fn=None,
+        inputs=[chatbot],
+        outputs=None,
+        js="(messages) => { window.__cdQueueHistorySave(messages); return []; }",
+    )
+    demo.load(
+        fn=restore_history,
+        inputs=[history_loader],
+        outputs=[chatbot, chat_input],
+        js="() => [window.__cdHistoryPayload || '']",
+        queue=False,
+    )
+    history_select.click(
+        fn=restore_history,
+        inputs=[history_loader],
+        outputs=[chatbot, chat_input],
+        js="() => [window.__cdHistoryPayload || '']",
+        queue=False,
     )
     # 切换按钮点击事件
     toggle_voice_button.click(
@@ -823,7 +1074,7 @@ with gr.Blocks(
 
 # 启动应用
 def start_gradio():
-    demo.launch(server_name="127.0.0.1", server_port=10032, share=False)
+    demo.launch(server_name="127.0.0.1", server_port=10032, share=False, favicon_path=AVATAR[1])
 
 
 if __name__ == "__main__":

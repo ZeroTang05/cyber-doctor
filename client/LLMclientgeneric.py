@@ -12,7 +12,7 @@ from overrides import override
 class LLMclientgeneric(LLMclientbase):
 
     def __init__(self, *args, **krgs):
-        super().__init__()
+        super().__init__(*args, **krgs)
 
     # 该函数只负责单论对话交流，不支持流式输出，无历史输入
     @override

@@ -10,19 +10,33 @@ from typing import List, Dict
 
 # 抽象类，用于构造client
 class LLMclientbase(object):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        api_key_variable: str = "LLM_API_KEY",
+        base_url_variable: str = "LLM_BASE_URL",
+        model_variable: str = "MODEL_NAME",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model_name: str | None = None,
+    ):
         """
         初始化LLM客户端基类
         """
+        api_key = (api_key or get_env_value(api_key_variable) or "").strip()
+        base_url = (base_url or get_env_value(base_url_variable) or "").strip()
+        model_name = (model_name or get_env_value(model_variable) or "").strip()
+        if not api_key:
+            raise ValueError(f"请配置环境变量 {api_key_variable}")
+        if not base_url:
+            raise ValueError(f"请配置环境变量 {base_url_variable}")
+        if not model_name:
+            raise ValueError(f"请配置环境变量 {model_variable}")
         self.__client = OpenAI(
-            api_key=get_env_value(
-                "LLM_API_KEY"
-            ),  # 使用环境变量中的API密钥初始化OpenAI客户端
-            base_url=get_env_value(
-                "LLM_BASE_URL"
-            ),  # 使用环境变量中的基础URL初始化OpenAI客户端
+            api_key=api_key,
+            base_url=base_url,
         )
-        self.__model_name = get_env_value("MODEL_NAME")  # 使用环境变量中的模型名称
+        self.__model_name = model_name
 
     @property
     def client(self):

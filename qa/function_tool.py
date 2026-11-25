@@ -114,10 +114,18 @@ def RAG_tool(
 # 处理ImageGeneration问题的函数
 def process_images_tool(question_type, question, history, image_url=None):
     client = Clientfactory.get_special_client(client_type=question_type)
-    response = client.images.generations(
-        model=get_env_value("IMAGE_GENERATE_MODEL"),  # 填写需要调用的模型编码
-        prompt=question,
-    )
+    if (get_env_value("IMAGE_PROVIDER") or "zhipu").strip().lower() == "minimax":
+        from client.minimaxAPI.client import image_model
+
+        response = client.images.generate(
+            model=image_model(),
+            prompt=question,
+        )
+    else:
+        response = client.images.generations(
+            model=get_env_value("IMAGE_GENERATE_MODEL"),
+            prompt=question,
+        )
     print(response.data[0].url)
     return (response.data[0].url, question_type)
 

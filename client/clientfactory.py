@@ -17,7 +17,12 @@ class Clientfactory:
         """
         获取默认的客户端实例
         """
-        return OurAPI()  # 返回我们自己的API客户端实例
+        provider = (get_env_value("LLM_PROVIDER") or "openai").strip().lower()
+        if provider == "minimax":
+            from client.minimaxAPI.client import MiniMaxAPI
+
+            return MiniMaxAPI()
+        return OurAPI()
 
     @staticmethod
     def get_special_client(client_type: str):
@@ -28,6 +33,11 @@ class Clientfactory:
         """
         print("get_special_client")
         if client_type == userPurposeType.ImageGeneration:
+            image_provider = (get_env_value("IMAGE_PROVIDER") or "zhipu").strip().lower()
+            if image_provider == "minimax":
+                from client.minimaxAPI.client import get_image_client
+
+                return get_image_client()
             from client.zhipuAPI.client import get_client
 
             return get_client("IMAGE_GENERATE_API")

@@ -727,6 +727,7 @@ with gr.Blocks(
                     elem_id="cd-chat",
                     show_label=False,
                     container=False,
+                    buttons=["share", "copy_all"],
                     avatar_images=AVATAR,
                     latex_delimiters=[
                         {"left": "\\(", "right": "\\)", "display": True},

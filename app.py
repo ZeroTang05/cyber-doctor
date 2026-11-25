@@ -4,8 +4,8 @@ from qa.answer import get_answer
 from qa.question_parser import parse_question
 from qa.purpose_type import userPurposeType
 from audio.audio_generate import audio_generate
-from env import get_env_value
 
+import base64
 import mimetypes
 import gradio as gr
 from icecream import ic
@@ -103,17 +103,10 @@ def image_to_base64(image_path):
 
 # 核心函数
 def grodio_view(chatbot, chat_input):
-    if not chat_input["files"]:
-        missing = [
-            key for key in ("LLM_BASE_URL", "LLM_API_KEY", "MODEL_NAME")
-            if not (get_env_value(key) or "").strip()
-        ]
-        if missing:
-            raise gr.Error(f"请在 .env 中配置 {', '.join(missing)}，然后重启应用。")
-
-    # 用户消息立即显示
-    user_message = chat_input["text"]
-    bot_response = "loading..."
+    user_message = chat_input["text"] or ""
+    if not user_message.strip() and not chat_input["files"]:
+        return
+    bot_response = "正在处理…"
     chatbot.append([user_message, bot_response])
     yield chatbot, {"text": "", "files": []}
 
@@ -126,7 +119,7 @@ def grodio_view(chatbot, chat_input):
     texts = []
 
     for file in files:
-        file_type, _ = mimetypes.guess_type(file)
+        file_type = mimetypes.guess_type(file)[0] or ""
         if file_type.startswith("audio/"):
             audios.append(file)
         elif file_type.startswith("image/"):
@@ -162,8 +155,8 @@ def grodio_view(chatbot, chat_input):
 
     try:
         question_type = parse_question(user_message, image_url)
-    except APIError as error:
-        chatbot[-1][1] = f"模型请求失败（{type(error).__name__}），请稍后再试。"
+    except (APIError, ValueError) as error:
+        chatbot[-1][1] = model_error_message(error)
         yield chatbot, gr.skip()
         return
     ic(question_type)
@@ -197,9 +190,9 @@ def grodio_view(chatbot, chat_input):
     if user_message == "":
         user_message = "请你将下面的句子修饰后输出，不要包含额外的文字，句子:'请问您有什么想了解的，我将尽力为您服务'"
     try:
-        answer = get_answer(user_message, chatbot, question_type, image_url)
-    except APIError as error:
-        chatbot[-1][1] = f"模型请求失败（{type(error).__name__}），请稍后再试。"
+        answer = get_answer(user_message, chatbot[:-1], question_type, image_url)
+    except (APIError, ValueError) as error:
+        chatbot[-1][1] = model_error_message(error)
         yield chatbot, gr.skip()
         return
     bot_response = ""
@@ -338,39 +331,27 @@ def grodio_view(chatbot, chat_input):
 
 
 def gradio_audio_view(chatbot, audio_input):
-
-    # 用户消息立即显示
     if audio_input is None:
-        user_message = ""
-    else:
-        user_message = (audio_input, "audio")
-    bot_response = "loading..."
-    chatbot.append([user_message, bot_response])
+        raise gr.Error("请先录音或上传音频。")
+
+    # 先显示已提交的录音，再将识别结果交给模型。
+    chatbot.append([(audio_input, "audio"), "正在处理…"])
     yield chatbot
 
-    if audio_input is None:
-        audio_message = "无音频"
-    else:
-        audio_message = audio_to_text(audio_input)
-
-    chatbot[-1][0] = audio_message
-
-    user_message = ""
-    if audio_message == "无音频":
-        user_message += "请你将下面的句子修饰后输出，不要包含额外的文字，句子:'欢迎与我对话，我将用语音回答您'"
-    elif audio_message == "":
-        user_message += "请你将下面的句子修饰后输出，不要包含额外的文字，句子:'音频识别失败，请稍后再试'"
-    elif "作曲 作曲" in audio_message:
-        user_message += "请你将下面的句子修饰后输出，不要包含额外的文字，句子:'不好意思，我无法理解音乐'"
-    else:
-        user_message += audio_message
-
-    if user_message == "":
-        user_message = "请你将下面的句子修饰后输出，不要包含额外的文字，句子:'请问您有什么想了解的，我将尽力为您服务'"
-
-    question_type = parse_question(user_message)
-    ic(question_type)
-    answer = get_answer(user_message, chatbot, question_type)
+    user_message = audio_to_text(audio_input).strip()
+    if not user_message or "作曲 作曲" in user_message:
+        chatbot[-1][1] = "没有识别到语音，请重新录音或上传音频。"
+        yield chatbot
+        return
+    chatbot[-1][0] = user_message
+    try:
+        question_type = parse_question(user_message)
+        ic(question_type)
+        answer = get_answer(user_message, chatbot[:-1], question_type)
+    except (APIError, ValueError) as error:
+        chatbot[-1][1] = model_error_message(error)
+        yield chatbot
+        return
     bot_response = ""
 
     # 处理文本生成/其他/文档检索/知识图谱检索
@@ -504,6 +485,54 @@ def gradio_audio_view(chatbot, audio_input):
         yield chatbot
 
 
+def model_error_message(error):
+    """将模型请求失败呈现在当前回答中。"""
+    if isinstance(error, APIError) and getattr(error, "status_code", None) == 402:
+        return "模型服务返回 402，当前账户额度不足。"
+    return f"模型请求失败（{type(error).__name__}），请检查模型配置后重试。"
+
+
+def chat_turns(messages):
+    """将 Gradio 消息还原为模型调用使用的问答对。"""
+    turns = []
+    for message in messages:
+        item = message["content"][0]
+        content = item["text"] if item["type"] == "text" else (
+            item["file"]["path"], item.get("alt_text")
+        )
+        if message["role"] == "user":
+            turns.append([content, None])
+        elif message["role"] == "assistant":
+            turns[-1][1] = content
+    return turns
+
+
+def chat_messages(turns):
+    """将问答对转换为 Gradio 6 的文本或文件消息。"""
+    messages = []
+    for turn in turns:
+        for role, content in zip(("user", "assistant"), turn):
+            if content is None:
+                continue
+            if isinstance(content, tuple):
+                path, alt_text = content
+                content = {"path": path, "alt_text": alt_text}
+            messages.append({"role": role, "content": content})
+    return messages
+
+
+def submit_text_chat(messages, chat_input):
+    """提交文字或附件，并逐次更新聊天记录。"""
+    for turns, composer in grodio_view(chat_turns(messages), chat_input):
+        yield chat_messages(turns), composer
+
+
+def submit_voice_chat(messages, audio_input):
+    """提交录音，并逐次更新聊天记录。"""
+    for turns in gradio_audio_view(chat_turns(messages), audio_input):
+        yield chat_messages(turns)
+
+
 # 切换到语音模式的函数
 def toggle_voice_mode():
     return (
@@ -569,6 +598,7 @@ SIDEBAR_ICON = (
 # 构建 Gradio 界面
 with gr.Blocks(
     title="赛博华佗",
+    fill_width=True,
     theme=gr.themes.Default(font=["sans-serif"], font_mono=["monospace"]),
     css=Path(__file__).with_name("interface.css").read_text(encoding="utf-8"),
     js="""
@@ -697,9 +727,7 @@ with gr.Blocks(
                     elem_id="cd-chat",
                     show_label=False,
                     container=False,
-                    bubble_full_width=False,
                     avatar_images=AVATAR,
-                    show_copy_button=True,
                     latex_delimiters=[
                         {"left": "\\(", "right": "\\)", "display": True},
                         {"left": "\\[", "right": "\\]", "display": True},
@@ -728,6 +756,7 @@ with gr.Blocks(
                     placeholder="输入消息或上传文件…",
                     show_label=False,
                     max_lines=6,
+                    min_width=0,
                     elem_id="cd-message-input",
                 )
                 audio_input = gr.Audio(
@@ -738,7 +767,7 @@ with gr.Blocks(
                     elem_id="cd-audio-input",
                 )
                 submit_audio_button = gr.Button(
-                    "发送", visible=False, variant="primary", elem_id="cd-audio-send",
+                    "发送", visible=False, interactive=False, variant="primary", elem_id="cd-audio-send",
                 )
     with sidebar_examples:
         gr.Examples(
@@ -749,7 +778,10 @@ with gr.Blocks(
     new_chat.add([chatbot, chat_input, audio_input])
     clear.add([chatbot, chat_input, audio_input])
 
-    chat_input.submit(fn=grodio_view, inputs=[chatbot, chat_input], outputs=[chatbot, chat_input])
+    chat_input.submit(
+        fn=submit_text_chat, inputs=[chatbot, chat_input], outputs=[chatbot, chat_input],
+        api_name="grodio_view",
+    )
     # 切换按钮点击事件
     toggle_voice_button.click(
         fn=toggle_voice_mode,
@@ -775,8 +807,16 @@ with gr.Blocks(
         ],
     )
 
+    audio_input.change(
+        fn=lambda audio: gr.update(interactive=audio is not None),
+        inputs=audio_input,
+        outputs=submit_audio_button,
+        queue=False,
+        api_visibility="private",
+    )
     submit_audio_button.click(
-        fn=gradio_audio_view, inputs=[chatbot, audio_input], outputs=[chatbot]
+        fn=submit_voice_chat, inputs=[chatbot, audio_input], outputs=[chatbot],
+        api_name="gradio_audio_view",
     )
 
 

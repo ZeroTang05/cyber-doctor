@@ -38,8 +38,6 @@ body:has(#cd-app) {
     --color-accent: var(--cd-accent);
     --font: var(--cd-font);
     --chatbot-body-text-size: 16px;
-    max-width: none;
-    padding: 0;
     background: var(--cd-page);
     color: var(--cd-ink);
     color-scheme: light;
@@ -50,6 +48,12 @@ body:has(#cd-app) {
     display: none;
 }
 
+/* 去掉 Gradio 在应用外层附加的边距。 */
+.gradio-container > .main:has(#cd-app),
+.gradio-container main:has(#cd-app) {
+    padding: 0;
+}
+
 #cd-app {
     --cd-gutter: 32px;
     --cd-rail: min(800px, calc(100% - 2 * var(--cd-gutter)));
@@ -58,6 +62,8 @@ body:has(#cd-app) {
     grid-template-columns: 240px minmax(0, 1fr);
     gap: 0;
     width: 100%;
+    min-width: 0;
+    align-items: stretch;
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
@@ -303,7 +309,7 @@ body:has(#cd-app) {
 #cd-conversation {
     display: grid;
     grid-template: minmax(0, 1fr) / minmax(0, 1fr);
-    flex-basis: 0;
+    flex: 1 1 0;
     min-height: 0;
     gap: 0;
 }
@@ -320,9 +326,16 @@ body:has(#cd-app) {
 
 #cd-welcome {
     container-type: size;
-    overflow: hidden auto;
     scrollbar-width: thin;
     background: var(--cd-content);
+}
+
+#cd-app #cd-welcome {
+    overflow: hidden auto !important;
+}
+
+#cd-welcome .gradio-style {
+    padding: 0;
 }
 
 .cd-welcome-inner {
@@ -330,7 +343,8 @@ body:has(#cd-app) {
     flex-direction: column;
     justify-content: center;
     align-items: center;
-    width: 100cqw;
+    width: 100%;
+    box-sizing: border-box;
     min-height: 100cqh;
     padding: 26px var(--cd-gutter) 52px;
     text-align: center;
@@ -402,7 +416,7 @@ body:has(#cd-app) {
     box-shadow: none;
 }
 
-/* Gradio 4.44.1 supplies these inner scroll and message elements. */
+/* 对话历史单独滚动，以便输入区留在底部。 */
 #cd-chat .bubble-wrap {
     height: 100%;
     padding: 0;
@@ -536,6 +550,7 @@ body:has(#cd-app) {
 }
 
 #cd-composer .form:has(> #cd-message-input) {
+    padding: 0;
     border: 0;
     background: transparent;
     box-shadow: none;
@@ -547,12 +562,15 @@ body:has(#cd-app) {
     --block-shadow: 0 2px 5px #26342e0a;
     min-width: 0;
     padding: 5px 6px;
-    border: 1px solid var(--cd-border);
     border-radius: 22px;
     background: var(--cd-content);
 }
 
-#cd-message-input:focus-within {
+#cd-app #cd-message-input {
+    border: 1px solid var(--cd-border);
+}
+
+#cd-app #cd-message-input:focus-within {
     --block-shadow: 0 0 0 2px color-mix(in srgb, var(--cd-sage) 34%, transparent);
     border-color: var(--cd-accent);
 }
@@ -613,6 +631,11 @@ body:has(#cd-app) {
     min-width: 80px !important;
     min-height: 38px;
     border-radius: 8px;
+}
+
+#cd-audio-send:disabled {
+    background: var(--cd-sidebar);
+    color: var(--cd-muted);
 }
 
 #cd-examples {
@@ -697,7 +720,7 @@ body:has(#cd-app) {
     #cd-app {
         --cd-gutter: 16px;
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: var(--cd-toolbar-height) minmax(0, 1fr) auto;
+        grid-template-rows: minmax(var(--cd-toolbar-height), auto) minmax(0, 1fr) auto;
     }
 
     #cd-workspace { display: contents; }
@@ -722,6 +745,7 @@ body:has(#cd-app) {
 
     #cd-conversation {
         grid-area: 2 / 1;
+        align-self: stretch;
         isolation: isolate;
     }
 
